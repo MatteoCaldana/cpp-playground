@@ -1,0 +1,15 @@
+http://arborjs.org/docs/barnes-hut
+https://www.cs.princeton.edu/courses/archive/fall03/cs126/assignments/barnes-hut.html
+https://jheer.github.io/barnes-hut/
+https://beltoforion.de/en/barnes-hut-galaxy-simulator/
+http://portillo.ca/nbody/barnes-hut/
+https://anaroxanapop.github.io/behalf/
+https://lewiscoleblog.com/barnes-hut
+https://mikegrudic.wordpress.com/2017/07/11/a-simple-and-pythonic-barnes-hut-treecode/
+https://github.com/ntta/barnes-hut-algorithm
+
+
+------------------
+https://mikegrudic.wordpress.com/2017/07/11/a-simple-and-pythonic-barnes-hut-treecode/
+https://github.com/bacook17/behalf/blob/master/behalf/octree.py
+https://bitbucket.org/cs205nbody/cs-205-nbody/src/master/
