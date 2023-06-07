@@ -6,6 +6,15 @@
 
 #include <Eigen/Dense>
 
+
+// TODO > 
+// - pointer -> int32
+// - element data in vector (center of mass and total node mass)
+// - sort particle by bfs/dfs
+// - corners<dim, 2>
+// - corners type different from particle position (float vs double), 
+//   is the cast worth for memory space?
+
 // ============================================================================================
 
 template<typename T, int dim>
@@ -29,14 +38,16 @@ template<typename T, int dim>
 struct TreeNode {
   using P = Particle<T, dim>;
   using Vec = Vect<T, dim>;
+  using ChildrenType = std::array<TreeNode, (1ull << dim)>;
 
-  Eigen::Array<T, dim, 3> corners;
-  std::shared_ptr<std::array<TreeNode, (1ull << dim)>> children;
+  Eigen::Array<T, dim, 3> corners;                   // 3 * 3 * 8 = 72
+  ChildrenType *children = nullptr;                  // 8
+  std::vector<ChildrenType> *all_children = nullptr; // 8
 
-  P *particle = nullptr;
-  T mass = 0.0;
-  T h = -1.0;
-  Vec mass_times_position = Vec::Zero();
+  P *particle = nullptr;                             // 8
+  T mass = 0.0;                                      // 8
+  T h = -1.0;                                        // 8
+  Vec mass_times_position = Vec::Zero();             // 3 * 8 = 24
 
   bool inside(const Vec &position) {
     for(int i = 0; i < dim; ++i)
@@ -63,14 +74,16 @@ struct TreeNode {
     }
 
     // update com
-    mass += particle->mass;
-    mass_times_position += particle->mass * particle->pos;
+    mass += new_particle->mass;
+    mass_times_position += new_particle->mass * new_particle->pos;
     return true;
   };
 
-  std::shared_ptr<std::array<TreeNode, (1ull << dim)>> create_children() {
-    auto new_children = std::make_shared<typename decltype(children)::element_type>();
+  ChildrenType *create_children() {
+    all_children->push_back({});
+    ChildrenType *new_children = &((*all_children).back());
     for(size_t i = 0; i < new_children->size(); ++i) {
+      (*new_children)[i].all_children = all_children;
       for(int j = 0; j < dim; ++j) {
         const auto idx = (i >> j) % 2;
         (*new_children)[i].corners(j, 0) = corners(j, idx);
@@ -110,9 +123,12 @@ template<typename T, int dim>
 class Tree {
   using P = Particle<T, dim>;
   using Vec = Vect<T, dim>;
+  using ChildrenType = typename TreeNode<T, dim>::ChildrenType;
 
 public:
-  Tree(std::vector<P> &particles) : m_particles(particles) {
+  Tree(std::vector<P> &particles) : m_particles(particles), m_nodes(0) {
+    m_nodes.reserve(m_particles.size() * (1ull << dim));
+
     for(int j = 0; j < dim; ++j) {
       m_tree.corners(j, 0) = std::numeric_limits<T>::max();
       m_tree.corners(j, 2) = -std::numeric_limits<T>::max();
@@ -126,6 +142,7 @@ public:
       }
     }
     m_tree.h = norm<dim>(m_tree.corners.col(0), m_tree.corners.col(2));
+    m_tree.all_children = &m_nodes;
 
     for(auto &p : m_particles) {
       m_tree.insert(p.pos, &p);
@@ -140,8 +157,40 @@ public:
     return m_tree;
   }
 
+  TreeNode<T, dim> &get_root() {
+    return m_tree;
+  }
+
+  std::vector<ChildrenType> &get_nodes() {
+    return m_nodes;
+  }
+
+  void set_particles(std::vector<P> *paticles) {
+    m_particles = (*paticles);
+  }
+
+  void set_nodes(const std::vector<ChildrenType> & nodes) {
+    m_nodes = nodes;
+  }
+
+  void traverse_bfs(const std::function<bool(TreeNode<T, dim> &)> &f) {
+    std::vector<TreeNode<T, dim> *> curr = {&m_tree}, next;
+    while(!curr.empty()) {
+      for(auto &node : curr) {
+        if(!f(*node)) {
+          for(size_t i = 0; i < node->children->size(); ++i) {
+            next.push_back(&(*node->children)[i]);
+          }
+        }
+      }
+      std::swap(curr, next);
+      next.clear();
+    }
+  }
+
 private:
   std::vector<P> &m_particles;
+  std::vector<ChildrenType> m_nodes;
   TreeNode<T, dim> m_tree;
 };
 
@@ -181,7 +230,8 @@ void update_acceleration(Tree<T, dim> &tree) {
       p.acc[i] = 0.0;
  
   for(size_t i = 0; i < particles.size(); ++i) {
-    tree.get_root().traverse([&](const TreeNode<T, dim> &node){
+    const auto f = [&](const TreeNode<T, dim> &node){
+      //std::cout << &node << std::endl;
       if(node.children) {
         const Vect<T, dim> center_of_mass = node.mass_times_position / node.mass;
         const auto d = norm<dim>(center_of_mass, particles[i].pos);
@@ -201,7 +251,8 @@ void update_acceleration(Tree<T, dim> &tree) {
         }
         return true;
       }
-    });
+    };
+    tree.traverse_bfs(f);
   }
 }
 
@@ -235,13 +286,16 @@ std::vector<Particle<T, dim>> initialize(size_t n) {
 }
 
 
-int main() {
+int main(int argc, char **argv) {
   using real = double;
   constexpr int dim = 3;
 
+  if(argc < 2)
+    return -1;
+
   double t_fin = 0.1;
   double dt = 1e-2;
-  size_t n = 10000;
+  size_t n = std::atoll(argv[1]);
 
   using namespace std::chrono;
 
@@ -258,6 +312,9 @@ int main() {
   }
 
   {
+    std::cout << "sizeof node: " << sizeof(TreeNode<real, dim>) << std::endl;
+    std::cout << "sizeof chil: " << sizeof(typename TreeNode<real, dim>::ChildrenType) << std::endl;
+
     size_t t_tree = 0, t_update = 0, t_integration = 0;
 
     auto particles = initialize<real, dim>(n);
@@ -270,11 +327,84 @@ int main() {
       auto t1 = high_resolution_clock::now();
       t_tree += duration_cast<milliseconds>(t1 - t0).count();
 
+
+      std::vector<Particle<real, dim> *> particles_po;
+      std::vector<Particle<real, dim>> new_particles;
+      tree.traverse_bfs([&](const TreeNode<real, dim> &node){ 
+        if(node.children) {
+          return false;
+        } else {
+          if(node.particle)
+            particles_po.push_back(node.particle);
+          return true;
+        }
+      });
+      for(const auto p : particles_po)
+        new_particles.push_back(*p);
+
+      size_t count = 0;
+      tree.traverse_bfs([&](TreeNode<real, dim> &node){ 
+        if(node.children) {
+          return false;
+        } else {
+          if(node.particle)
+            node.particle = &new_particles[count++];
+          return true;
+        }
+      });
+      tree.set_particles(&new_particles);
+      
+
+      std::vector<TreeNode<real, dim> *> curr = {&tree.get_root()}, next;
+      std::vector<typename TreeNode<real, dim>::ChildrenType *> nodes;
+      std::vector<typename TreeNode<real, dim>::ChildrenType> tmp;
+      std::vector<std::array<size_t, (1ull << dim)>> tmp2;
+
+      while(!curr.empty()) {
+        for(auto &node : curr) {
+          if(node->children) {
+            nodes.push_back(node->children);
+            for(size_t i = 0; i < node->children->size(); ++i) {
+              next.push_back(&(*node->children)[i]);
+            }
+          }
+        }
+        std::swap(curr, next);
+        next.clear();
+      }
+      
+      for(auto np : nodes) {
+        tmp.push_back(*np);
+        tmp2.push_back({});
+
+        for(size_t j = 0; j < (1ull << dim); ++j) {
+          for(size_t i = 0; i < nodes.size(); ++i) {
+            if( ((*np)[j]).children == nodes[i] ) {
+              tmp2.back()[j] = i;
+              //std::cout << "=" << i << std::endl;
+              break;
+            }
+          }
+        }
+      }
+
+      tree.set_nodes(tmp);
+
+      for(size_t i = 0; i < nodes.size(); ++i) {
+        for(size_t j = 0; j < (1ull << dim); ++j)
+        if(tmp2[i][j] != 0)
+          tree.get_nodes()[i][j].children = &tree.get_nodes()[tmp2[i][j]];
+        else 
+          tree.get_nodes()[i][j].children = nullptr;
+      }
+      //std::cout << "End trick" << std::endl;
+
+
       t0 = high_resolution_clock::now();
       update_acceleration<real, dim>(tree);
       t1 = high_resolution_clock::now();
       t_update += duration_cast<milliseconds>(t1 - t0).count();
-      std::cout << "nnodes" << tree.get_root().nnodes() << std::endl;
+      //std::cout << "nnodes" << tree.get_root().nnodes() << std::endl;
 
       t0 = high_resolution_clock::now();
       integrate<real, dim>(particles, dt);

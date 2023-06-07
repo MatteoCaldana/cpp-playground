@@ -3,6 +3,7 @@
 #include <chrono>
 #include <array>
 #include <memory>
+#include <cassert>
 
 #include <Eigen/Dense>
 
@@ -26,85 +27,111 @@ inline typename T::Scalar norm(const T &a, const T &b) {
 }
 
 template<typename T, int dim>
-struct TreeNode {
-  using P = Particle<T, dim>;
+struct NodeData {
   using Vec = Vect<T, dim>;
-  using ChildrenType = std::array<TreeNode, (1ull << dim)>;
 
-  Eigen::Array<T, dim, 3> corners;
-  ChildrenType *children = nullptr;
-  std::vector<ChildrenType> *all_children = nullptr;
-
-  P *particle = nullptr;
   T mass = 0.0;
   T h = -1.0;
   Vec mass_times_position = Vec::Zero();
+};
+
+template<typename T, int dim>
+struct TreeNode {
+  using P = Particle<T, dim>;
+  using Vec = Vect<T, dim>;
+  static constexpr inline size_t n_children = (1ull << dim);
+
+  struct ChildrenType {
+    std::array<TreeNode, n_children> children;
+    NodeData<T, dim> data;
+  };
+  
+  // TODO: use a lower precision type for corners?
+  //       tradeoff cast time vs space
+  Eigen::Array<T, dim, 2> corners;
+  int32_t children_idx = -1;
+  int32_t particle_idx = -1;
 
   bool inside(const Vec &position) {
     for(int i = 0; i < dim; ++i)
-      if(position[i] < corners(i, 0) || corners(i, 2) <= position[i]) {
+      if(position[i] < corners(i, 0) || corners(i, 1) <= position[i]) {
         return false;
       }
     return true;
   }
 
-  bool insert(const Vec &position, P *new_particle) {
+  bool insert(
+    const Vec &position, 
+    int32_t new_particle_idx, 
+    P *all_particles, 
+    std::vector<ChildrenType> *all_children
+  ) {
     if(!inside(position)){
       return false;
     }
-    if(particle) {
-      if(!children) {
-        children = create_children();
-        for(size_t i = 0; i < children->size(); ++i)
-          (*children)[i].insert(particle->pos, particle);
-      }
-      for(size_t i = 0; i < children->size(); ++i)
-        (*children)[i].insert(new_particle->pos, new_particle);
+
+    if(particle_idx == -1) {
+      particle_idx = new_particle_idx;
     } else {
-      particle = new_particle;
+      if(children_idx == -1) {
+        children_idx = create_children(all_children);
+        const auto particle = all_particles + particle_idx;
+
+        auto &node_data = (*all_children)[children_idx].data;
+        node_data.h = norm<dim>(corners.col(0), corners.col(1));
+        node_data.mass = particle->mass;
+        node_data.mass_times_position += particle->mass * particle->pos;
+
+        for(size_t i = 0; i < n_children; ++i)
+          (*all_children)[children_idx].children[i].insert(particle->pos, particle_idx, all_particles, all_children);
+      }
+      for(size_t i = 0; i < n_children; ++i)
+        (*all_children)[children_idx].children[i].insert(position, new_particle_idx, all_particles, all_children);
+
+      // update CenterOfMass
+      const auto new_particle = all_particles + new_particle_idx;
+      auto &node_data = (*all_children)[children_idx].data;
+      node_data.mass += new_particle->mass;
+      node_data.mass_times_position += new_particle->mass * new_particle->pos;
     }
 
-    // update com
-    mass += particle->mass;
-    mass_times_position += particle->mass * particle->pos;
     return true;
   };
 
-  ChildrenType *create_children() {
+  int32_t create_children(std::vector<ChildrenType> *all_children) {
+    Eigen::Array<T, dim, 3> corners_ext;
+    corners_ext.col(0) = corners.col(0);
+    corners_ext.col(2) = corners.col(1);
+    corners_ext.col(1) = (corners.col(0) + corners.col(1)) / 2;
+
     all_children->push_back({});
-    ChildrenType *new_children = &((*all_children).back());
-    for(size_t i = 0; i < new_children->size(); ++i) {
-      (*new_children)[i].all_children = all_children;
+    assert((*all_children).size() > 0);
+    int32_t new_children_idx = (*all_children).size() - 1;
+    for(size_t i = 0; i < n_children; ++i) {
       for(int j = 0; j < dim; ++j) {
         const auto idx = (i >> j) % 2;
-        (*new_children)[i].corners(j, 0) = corners(j, idx);
-        (*new_children)[i].corners(j, 2) = corners(j, idx + 1);
-        // middle
-        (*new_children)[i].corners(j, 1) = (
-            (*new_children)[i].corners(j, 0) + 
-            (*new_children)[i].corners(j, 2)
-          ) / 2.0;
+        (*all_children)[new_children_idx].children[i].corners(j, 0) = corners_ext(j, idx);
+        (*all_children)[new_children_idx].children[i].corners(j, 1) = corners_ext(j, idx + 1);
       }
-      (*new_children)[i].h = h / 2.0;
     }
-    return new_children;
+    return new_children_idx;
   }
 
-  void traverse(const std::function<bool(const TreeNode<T, dim> &)> &f) const {
+  void traverse(const std::function<bool(const TreeNode<T, dim> &)> &f, std::vector<ChildrenType> *all_children) const {
     if(f(*this))
       return;
-    if(children) {
-      for(auto &p : *children){
-        p.traverse(f);
+    if(children_idx != -1) {
+      for(auto &p : (*all_children)[children_idx].children){
+        p.traverse(f, all_children);
       }
     }
   }
 
-  size_t nnodes() const {
+  size_t nnodes(std::vector<ChildrenType> *all_children) const {
     size_t nnodes_children = 0;
-    if(children) {
-      for(const auto &c : *children)
-        nnodes_children += c.nnodes();
+    if(children_idx != -1) {
+      for(const auto &c : (*all_children)[children_idx].children)
+        nnodes_children += c.nnodes(all_children);
     }
     return 1 + nnodes_children;
   }
@@ -122,21 +149,17 @@ public:
 
     for(int j = 0; j < dim; ++j) {
       m_tree.corners(j, 0) = std::numeric_limits<T>::max();
-      m_tree.corners(j, 2) = -std::numeric_limits<T>::max();
+      m_tree.corners(j, 1) = -std::numeric_limits<T>::max();
     }
     for(const auto &p : m_particles) {
       for(int j = 0; j < dim; ++j) {
         constexpr T eps = 2.0 * std::numeric_limits<T>::epsilon();
         m_tree.corners(j, 0) = std::min(m_tree.corners(j, 0), p.pos[j]);
-        m_tree.corners(j, 2) = std::max(m_tree.corners(j, 2), p.pos[j] + eps);
-        m_tree.corners(j, 1) = (m_tree.corners(j, 0) + m_tree.corners(j, 2)) / 2.0;
+        m_tree.corners(j, 1) = std::max(m_tree.corners(j, 1), p.pos[j] + eps);
       }
     }
-    m_tree.h = norm<dim>(m_tree.corners.col(0), m_tree.corners.col(2));
-    m_tree.all_children = &m_nodes;
-
-    for(auto &p : m_particles) {
-      m_tree.insert(p.pos, &p);
+    for(size_t i = 0; i < m_particles.size(); ++i) {
+      m_tree.insert(m_particles[i].pos, i, m_particles.data(), &m_nodes);
     }
   }
 
@@ -160,19 +183,31 @@ public:
     m_nodes = nodes;
   }
 
-  void traverse_bfs(const std::function<bool(const TreeNode<T, dim> &)> &f) {
+  void set_particles(std::vector<P> *paticles) {
+    m_particles = (*paticles);
+  }
+
+  size_t nnodes() {
+    return m_tree.nnodes(&m_nodes);
+  }
+
+  void traverse_bfs(const std::function<bool(TreeNode<T, dim> &)> &f) {
     std::vector<TreeNode<T, dim> *> curr = {&m_tree}, next;
     while(!curr.empty()) {
       for(auto &node : curr) {
         if(!f(*node)) {
-          for(size_t i = 0; i < node->children->size(); ++i) {
-            next.push_back(&(*node->children)[i]);
+          for(size_t i = 0; i < TreeNode<T, dim>::n_children; ++i) {
+            next.push_back(&(m_nodes[node->children_idx].children[i]));
           }
         }
       }
       std::swap(curr, next);
       next.clear();
     }
+  }
+
+  void traverse_dfs(const std::function<bool(const TreeNode<T, dim> &)> &f) {
+    m_tree.traverse(f, &m_nodes);
   }
 
 private:
@@ -216,32 +251,33 @@ void update_acceleration(Tree<T, dim> &tree) {
     for(size_t i = 0; i < dim; ++i)
       p.acc[i] = 0.0;
  
-  for(size_t i = 0; i < particles.size(); ++i) {
+  int32_t n_particles = particles.size();
+  for(int32_t i = 0; i < n_particles; ++i) {
     const auto f = [&](const TreeNode<T, dim> &node){
       //std::cout << &node << std::endl;
-      if(node.children) {
-        const Vect<T, dim> center_of_mass = node.mass_times_position / node.mass;
+      if(node.children_idx != -1) {
+        const auto &node_data = tree.get_nodes()[node.children_idx].data;
+        const Vect<T, dim> center_of_mass = node_data.mass_times_position / node_data.mass;
         const auto d = norm<dim>(center_of_mass, particles[i].pos);
-        if(node.h / d < theta) {
+        if(node_data.h / d < theta) {
           const auto force = compute_force(particles[i].pos, center_of_mass);
-          particles[i].acc += force * node.mass;
+          particles[i].acc += force * node_data.mass;
           return true;
         } else {
           return false;
         }
       } else {
-        if(&particles[i] == node.particle)
+        if(i == node.particle_idx)
           return true;
-        if(node.particle) {
-          const auto force = compute_force(particles[i].pos, node.particle->pos);
-          particles[i].acc += force * node.particle->mass;
+        if(node.particle_idx != -1) {
+          const auto force = compute_force(particles[i].pos, particles[node.particle_idx].pos);
+          particles[i].acc += force * particles[node.particle_idx].mass;
         }
         return true;
       }
     };
-    //tree.get_root().traverse(f);
-    tree.traverse_bfs(f);
-    //std::exit(-1);
+    tree.traverse_dfs(f);
+    //tree.traverse_bfs(f);
   }
 }
 
@@ -301,6 +337,9 @@ int main(int argc, char **argv) {
   }
 
   {
+    std::cout << "sizeof node: " << sizeof(TreeNode<real, dim>) << std::endl;
+    std::cout << "sizeof chil: " << sizeof(typename TreeNode<real, dim>::ChildrenType) << std::endl;
+
     size_t t_tree = 0, t_update = 0, t_integration = 0;
 
     auto particles = initialize<real, dim>(n);
@@ -313,35 +352,64 @@ int main(int argc, char **argv) {
       auto t1 = high_resolution_clock::now();
       t_tree += duration_cast<milliseconds>(t1 - t0).count();
 
-
+      // ========================================================================
+      // reordering particles in bfs order
+      // ========================================================================
+      std::vector<int32_t> particles_po;
+      std::vector<Particle<real, dim>> new_particles;
+      // check and save the bfs order
+      tree.traverse_bfs([&](const TreeNode<real, dim> &node){ 
+        if(node.children_idx != -1) {
+          return false;
+        } else {
+          if(node.particle_idx != -1)
+            particles_po.push_back(node.particle_idx);
+          return true;
+        }
+      });
+      // make copy of new order
+      for(const auto i : particles_po)
+        new_particles.push_back(particles[i]);
+      // apply new order to tree
+      int32_t count = 0;
+      tree.traverse_bfs([&](TreeNode<real, dim> &node){ 
+        if(node.children_idx != -1) {
+          return false;
+        } else {
+          if(node.particle_idx != -1)
+            node.particle_idx = count++;
+          return true;
+        }
+      });
+      tree.set_particles(&new_particles);
+      
+      // ========================================================================
+      // reordering nodes in bfs order
+      // ========================================================================
       std::vector<TreeNode<real, dim> *> curr = {&tree.get_root()}, next;
-      std::vector<typename TreeNode<real, dim>::ChildrenType *> nodes;
+      std::vector<int32_t> nodes;
+      std::vector<typename TreeNode<real, dim>::ChildrenType> tmp;
+      std::vector<std::array<int32_t, (1ull << dim)>> tmp2;
+      // check and save the bfs order
       while(!curr.empty()) {
         for(auto &node : curr) {
-          if(node->children) {
-            nodes.push_back(node->children);
-            for(size_t i = 0; i < node->children->size(); ++i) {
-              next.push_back(&(*node->children)[i]);
+          if(node->children_idx != -1) {
+            nodes.push_back(node->children_idx);
+            for(size_t i = 0; i < (1ull << dim); ++i) {
+              next.push_back(&(tree.get_nodes()[node->children_idx].children[i]));
             }
           }
         }
         std::swap(curr, next);
         next.clear();
       }
-
-      //std::cout << "nodes size" << nodes.size() << std::endl;
-
-
-      //std::cout << "Start trick" << std::endl;
-      std::vector<typename TreeNode<real, dim>::ChildrenType> tmp;
-      std::vector<std::array<size_t, (1ull << dim)>> tmp2;
+      // make new order (for each node find the children idxs)
       for(auto np : nodes) {
-        tmp.push_back(*np);
+        tmp.push_back(tree.get_nodes()[np]);
         tmp2.push_back({});
-
         for(size_t j = 0; j < (1ull << dim); ++j) {
-          for(size_t i = 0; i < nodes.size(); ++i) {
-            if( ((*np)[j]).children == nodes[i] ) {
+          for(int32_t i = 0; i < int32_t(nodes.size()); ++i) {
+            if( tree.get_nodes()[np].children[j].children_idx == i ) {
               tmp2.back()[j] = i;
               //std::cout << "=" << i << std::endl;
               break;
@@ -349,26 +417,24 @@ int main(int argc, char **argv) {
           }
         }
       }
-
-      
-
+      // set new order
       tree.set_nodes(tmp);
-
       for(size_t i = 0; i < nodes.size(); ++i) {
         for(size_t j = 0; j < (1ull << dim); ++j)
         if(tmp2[i][j] != 0)
-          tree.get_nodes()[i][j].children = &tree.get_nodes()[tmp2[i][j]];
+          tree.get_nodes()[i].children[j].children_idx = tmp2[i][j];
         else 
-          tree.get_nodes()[i][j].children = nullptr;
+          tree.get_nodes()[i].children[j].children_idx = -1;
       }
-      //std::cout << "End trick" << std::endl;
+      // ========================================================================
 
+      // TODO: use same trick to reorder node data 
 
       t0 = high_resolution_clock::now();
       update_acceleration<real, dim>(tree);
       t1 = high_resolution_clock::now();
       t_update += duration_cast<milliseconds>(t1 - t0).count();
-      //std::cout << "nnodes" << tree.get_root().nnodes() << std::endl;
+      std::cout << "nnodes" << tree.nnodes() << std::endl;
 
       t0 = high_resolution_clock::now();
       integrate<real, dim>(particles, dt);
