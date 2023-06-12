@@ -213,7 +213,6 @@ void integrate(std::vector<Particle<T, dim>> &particles, double dt) {
   }
 }
 
-
 template<typename T, int dim>
 std::vector<Particle<T, dim>> initialize(size_t n) {
   using P = Particle<T, dim>;

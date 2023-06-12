@@ -15,7 +15,7 @@ void plot_particles(Gnuplot &gp, const std::vector<Particle<T, dim>> &particles)
 }
 
 template<typename T, int dim>
-void plot_tree(Gnuplot &gp, const Tree<T, dim> &tree) {
+void plot_tree(Gnuplot &gp, Tree<T, dim> &tree) {
   tree.traverse_bfs([&](const auto &node){
     gp << "plot '-' with lines title ''\n";
     const std::vector<double> x = {node.corners(0, 0), node.corners(0, 1), node.corners(0, 1), node.corners(0, 0), node.corners(0, 0)};

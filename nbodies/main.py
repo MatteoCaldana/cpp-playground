@@ -86,7 +86,7 @@ def main():
 	# Simulation parameters
 	N         = 100    # Number of particles
 	t         = 0      # current time of the simulation
-	tEnd      = 10.0   # time at which simulation ends
+	tEnd      = 1.0   # time at which simulation ends
 	dt        = 0.01   # timestep
 	softening = 0.1    # softening length
 	G         = 1.0    # Newton's Gravitational Constant

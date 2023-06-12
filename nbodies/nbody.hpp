@@ -9,8 +9,10 @@ constexpr double theta = 0.5;
 template<typename T, int dim>
 inline Vect<T, dim> compute_force(const Vect<T, dim> &a, const Vect<T, dim> &b) {
   const Vect<T, dim> r = a - b;
-  const T inv_r3 = std::pow((r * r).sum() + softening, -1.5);
-  return r * (G * inv_r3);
+  T norm2 = softening;
+  for(int i = 0; i < dim; ++i)
+    norm2 += r[i] * r[i];
+  return -r * (G * std::pow(norm2, -1.5));
 }
 
 template<typename T, int dim>
@@ -22,13 +24,13 @@ void update_acceleration(std::vector<Particle<T, dim>> &particles) {
   for(size_t i = 0; i < particles.size(); ++i) {
     for(size_t j = 0; j < i; ++j) {
       const auto force = compute_force(particles[i].pos, particles[j].pos);
-      particles[i].acc -= force * particles[j].mass;
-      particles[j].acc += force * particles[i].mass;
+      particles[i].acc += force * particles[j].mass;
+      particles[j].acc -= force * particles[i].mass;
     }
   }
 }
 
-template<typename T, int dim>
+template<typename T, int dim, TraverseOrder O>
 void update_acceleration(Tree<T, dim> &tree) {
   auto &particles = tree.get_particles();
   for(auto &p : particles)
@@ -59,8 +61,7 @@ void update_acceleration(Tree<T, dim> &tree) {
         return true;
       }
     };
-    tree.traverse_dfs(f);
-    //tree.traverse_bfs(f);
+    tree.template traverse<O>(f);
   }
 }
 
