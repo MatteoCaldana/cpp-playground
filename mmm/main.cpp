@@ -4,7 +4,6 @@
 #include <cstdlib>  // atoll
 #include <iostream>
 #include <random>
-
 // https://marek.ai/matrix-multiplication-on-cpu.html
 // https://coffeebeforearch.github.io/2020/06/23/mmul.html
 // https://siboehm.com/articles/22/Fast-MMM-on-CPU
@@ -81,6 +80,72 @@ void mm_blocked(const double *A, const double *B, double *C, int N) {
 }
 
 template <int T>
+void mm_blocked_transpose(const double *A, const double *B, double *C, int N) {
+  const int M = N;
+  const int K = N;
+
+  double *tmp = new double[N*N];
+  for(int i = 0; i < M; ++i) {
+    for(int j = 0; j < N; ++j) {
+      tmp[i * N + j] = B[i + j * N];
+    }
+  }
+
+  for (int m = 0; m < M; m += T) {
+    for (int n = 0; n < N; n += T) {
+      for (int k = 0; k < K; k += T) {
+        const int minMt = std::min(m + T, M);
+        const int minNt = std::min(n + T, N);
+        const int minKt = std::min(k + T, K);
+        for (int mt = m; mt < minMt; mt++) {
+          for (int nt = n; nt < minNt; nt++) {
+            for (int kt = k; kt < minKt; kt++) {
+              C[mt * M + nt] += A[mt * M + kt] * tmp[nt * K + kt];
+            }
+          }
+        }
+      }
+    }
+  }
+
+  delete tmp;
+}
+
+template <int T>
+void mm_blocked_transpose_tmp(const double *A, const double *B, double *C, int N) {
+  const int M = N;
+  const int K = N;
+
+  double *tmp = new double[N*N];
+  for(int i = 0; i < M; ++i) {
+    for(int j = 0; j < N; ++j) {
+      tmp[i * N + j] = B[i + j * N];
+    }
+  }
+
+  for (int m = 0; m < M; m += T) {
+    for (int n = 0; n < N; n += T) {
+      for (int k = 0; k < K; k += T) {
+        const int minMt = std::min(m + T, M);
+        const int minNt = std::min(n + T, N);
+        const int minKt = std::min(k + T, K);
+        for (int mt = m; mt < minMt; mt++) {
+          for (int nt = n; nt < minNt; nt++) {
+            double r = C[mt * M + nt];
+            for (int kt = k; kt < minKt; kt++) {
+              r += A[mt * M + kt] * tmp[nt * K + kt];
+            }
+            C[mt * M + nt] = r;
+          }
+        }
+      }
+    }
+  }
+
+  delete tmp;
+}
+
+template <int T>
 void mm_blocked_switch(const double *A, const double *B, double *C, int N) {
   const int M = N;
   const int K = N;
@@ -106,8 +171,15 @@ int main(int argc, char **argv) {
   const size_t N = argc > 1 ? std::atoll(argv[1]) : default_matrix_size;
   std::cout << "matrix_size = " << N << std::endl;
 
-  for (const auto &f : {blas_wrapper, mm_naive, mm_naive_tmp, mm_naive_switch,
-                        mm_blocked<64>, mm_blocked_switch<64>}) {
+  for (const auto &f : {
+                        blas_wrapper, 
+                        mm_naive_switch,
+                        //mm_blocked<64>, 
+                        mm_blocked_switch<64>,
+                        mm_blocked_transpose<16>,
+                        mm_blocked_transpose_tmp<16>,
+                        mm_blocked_transpose_tmp_simd256<16>
+                        }) {
     std::default_random_engine engine(std::random_device{}());
     std::uniform_real_distribution<double> rand(0, 1);
     double *A = new double[N * N];
@@ -119,6 +191,8 @@ int main(int argc, char **argv) {
       for (size_t j = 0; j < N; ++j) {
         A[i + j * N] = rand(engine);
         B[i + j * N] = rand(engine);
+        AB[i + j * N] = 0.0;
+        C[i + j * N] = 0.0;
       }
 
     const auto t0 = high_resolution_clock::now();
