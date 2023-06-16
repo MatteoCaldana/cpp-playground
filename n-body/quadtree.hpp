@@ -24,7 +24,12 @@ struct TreeNode {
   };
   
   // TODO: use cartesian index to indicate cell?
+  //       need to set max depth
   Eigen::Array<T, dim, 2> corners;
+
+  // TODO: here could use pointers, 
+  //    - pros: avoid getting data pointer and sum the index 
+  //    - cons: if std::vector capacity is exceeded and it re-allocates they become invalid
   int32_t children_idx = -1;
   int32_t particle_idx = -1;
 
@@ -33,6 +38,7 @@ struct TreeNode {
       if(position[i] < corners(i, 0) || corners(i, 1) <= position[i]) {
         return false;
       }
+
     return true;
   }
 
@@ -102,13 +108,24 @@ struct TreeNode {
     }
   }
 
-  size_t nnodes(std::vector<ChildrenType> *all_children) const {
+  size_t nnodes(const std::vector<ChildrenType> *all_children) const {
     size_t nnodes_children = 0;
     if(children_idx != -1) {
       for(const auto &c : (*all_children)[children_idx].children)
         nnodes_children += c.nnodes(all_children);
     }
     return 1 + nnodes_children;
+  }
+
+  size_t depth(const std::vector<ChildrenType> *all_children) const {
+    if(children_idx != -1) {
+      size_t n = 0;
+      for(const auto &c : (*all_children)[children_idx].children)
+        n = std::max(n, c.depth(all_children));
+      return n + 1;
+    } else {
+      return 0;
+    }
   }
 };
 
@@ -171,8 +188,12 @@ public:
     m_particles = (*paticles);
   }
 
-  size_t nnodes() {
+  size_t nnodes() const {
     return m_tree.nnodes(&m_nodes);
+  }
+
+  size_t depth() const {
+    return m_tree.depth(&m_nodes);
   }
 
   void traverse_bfs(const std::function<bool(TreeNode<T, dim> &)> &f) {

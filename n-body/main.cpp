@@ -61,6 +61,7 @@ int main(int argc, char **argv) {
 
       std::cout << "Compress tree"<<std::endl;
       t0 = high_resolution_clock::now();
+      // TODO: check this works properly, code becomes too fast
       tree.compress<order>();
       t1 = high_resolution_clock::now();
       t_compress += duration_cast<microseconds>(t1 - t0).count();
@@ -76,6 +77,8 @@ int main(int argc, char **argv) {
       integrate<real, dim>(particles, dt);
       t1 = high_resolution_clock::now();
       t_integration += duration_cast<microseconds>(t1 - t0).count();
+
+      std::cout << tree.depth() << std::endl;
 
       //plot_particles(gp, particles);
     }
