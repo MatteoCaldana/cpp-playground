@@ -1,5 +1,4 @@
-CXX_FLAGS += -std=c++17 -Wall -I${mkEigenInc} -I${mkBoostInc} -L${mkBoostLib} -lboost_iostreams -lboost_system -lboost_filesystem
-
+CXX_FLAGS += -std=c++17 -Wall -I${mkEigenInc}
 debug: main.cpp
 	g++ -O0 -g -fsanitize=address ${CXX_FLAGS} main.cpp -o main_debug.out
 

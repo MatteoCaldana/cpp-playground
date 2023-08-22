@@ -8,8 +8,15 @@
 #include "Eigen/Core"
 #include "unsupported/Eigen/CXX11/Tensor"
 
-//#include "gnuplot-iostream.h"
-
+static std::unordered_map<std::string, size_t> profiler;
+#define profile(code, profiler_entry) \
+    do { \
+        using namespace std::chrono; \
+        const auto start_time = high_resolution_clock::now(); \
+        code; \
+        const auto end_time = high_resolution_clock::now(); \
+        profiler[profiler_entry] += duration_cast<nanoseconds>(end_time - start_time).count(); \
+    } while (0)
 
 using ll = long long;
 using Array2 = Eigen::Matrix<double, -1, -1, Eigen::RowMajor>;
@@ -297,18 +304,10 @@ void zou_he_bottom_wall_velocity(Array3 &u, Array2x2d &u_bot, Array2 &rho,
 }
 
 void save_velocity(ll it, const Array3 &u) {
-  for(ll dim = 0; dim < 2; ++dim) {
-    char buffer[20];
-    std::sprintf(buffer, "u.%.6lld.%lld.txt", it, dim);
-    std::ofstream fout(buffer);
-    fout << std::scientific << std::setprecision(17);
-    for(ll i = 0; i < u.dimension(1); ++i) {
-      for(ll j = 0; j < u.dimension(2); ++j) {
-        fout << u(dim, i, j) << " ";
-      }
-      fout << "\n";
-    }
-  }
+  char buffer[128];
+  std::sprintf(buffer, "u.%.6lld.txt", it);
+  std::ofstream fout(buffer, std::ios::out | std::ios::binary);
+  fout.write(reinterpret_cast<const char*>(u.data()), u.size() * sizeof(double));
 }
 
 
@@ -374,56 +373,34 @@ int main() {
   compute_equilibrium(u, rho, g_eq);
   g = g_eq;
 
-  std::unordered_map<std::string, ll> profiler;
-  profiler["compute_equilibrium"] = 0;
-  profiler["set_inlets"] = 0;
-  profiler["compute_macroscopic"] = 0;
-  profiler["collision_and_streaming"] = 0;
-  profiler["boundary_conditions"] = 0;
-
   for (ll it = 0; it < it_max + 1; ++it) {
-    if (it % 100 == 0) {
-      std::cout << "Iteration: " << it << " / " << it_max << std::endl;
-      save_velocity(it, u);
-    }
+    profile(
+      if (it % 100 == 0) {
+        std::cout << "Iteration: " << it << " / " << it_max << std::endl;
+        save_velocity(it, u);
+      }, 
+      "IO"
+    );
     // 1. Set inlets
-    auto tt = high_resolution_clock::now();
-    set_inlets(sigma, u_lbm, it, u_top, u_bot, u_left, u_right);
-    auto tte = high_resolution_clock::now();
-    auto dtt = duration_cast<nanoseconds>(tte - tt).count();
-    profiler["set_inlets"] += dtt;
+    profile(set_inlets(sigma, u_lbm, it, u_top, u_bot, u_left, u_right);,"set_inlets");
     // 2. Compute macroscopic fields
-    tt = high_resolution_clock::now();
-    compute_macroscopic(g, u, rho);
-    tte = high_resolution_clock::now();
-    dtt = duration_cast<nanoseconds>(tte - tt).count();
-    profiler["compute_macroscopic"] += dtt;
-    // TBD. Output field
+    profile(compute_macroscopic(g, u, rho);, "compute_macroscopic");
     // 4. Compute equilibrium state
-    tt = high_resolution_clock::now();
-    compute_equilibrium(u, rho, g_eq);
-    tte = high_resolution_clock::now();
-    dtt = duration_cast<nanoseconds>(tte - tt).count();
-    profiler["compute_equilibrium"] += dtt;
+    profile(compute_equilibrium(u, rho, g_eq);, "compute_equilibrium");
     // 5. Streaming
-    tt = high_resolution_clock::now();
-    collision_and_streaming(om_p_lbm, om_m_lbm, lx, ly, g_eq, g, g_up);
-    tte = high_resolution_clock::now();
-    dtt = duration_cast<nanoseconds>(tte - tt).count();
-    profiler["collision_and_streaming"] += dtt;
+    profile(collision_and_streaming(om_p_lbm, om_m_lbm, lx, ly, g_eq, g, g_up);, "collision_and_streaming");
     // 6. Boundary conditions
-    tt = high_resolution_clock::now();
-    zou_he_bottom_wall_velocity(u, u_bot, rho, g);
-    zou_he_left_wall_velocity(u, u_left, rho, g);
-    zou_he_right_wall_velocity(lx, u, u_right, rho, g);
-    zou_he_top_wall_velocity(ly, u, u_top, rho, g);
-    zou_he_bottom_left_corner_velocity(u, rho, g);
-    zou_he_top_left_corner_velocity(ly, u, rho, g);
-    zou_he_top_right_corner_velocity(lx, ly, u, rho, g);
-    zou_he_bottom_right_corner_velocity(lx, u, rho, g);
-    tte = high_resolution_clock::now();
-    dtt = duration_cast<nanoseconds>(tte - tt).count();
-    profiler["boundary_conditions"] += dtt;
+    profile(
+      zou_he_bottom_wall_velocity(u, u_bot, rho, g);
+      zou_he_left_wall_velocity(u, u_left, rho, g);
+      zou_he_right_wall_velocity(lx, u, u_right, rho, g);
+      zou_he_top_wall_velocity(ly, u, u_top, rho, g);
+      zou_he_bottom_left_corner_velocity(u, rho, g);
+      zou_he_top_left_corner_velocity(ly, u, rho, g);
+      zou_he_top_right_corner_velocity(lx, ly, u, rho, g);
+      zou_he_bottom_right_corner_velocity(lx, u, rho, g);,
+      "boundary_conditions"
+    );
     // TBD: Compute observables (drag, lift, etc)
   }
 
@@ -433,28 +410,6 @@ int main() {
   for (const auto &[key, value] : profiler) {
     std::cout << key << ": " << value / 1000000 << std::endl;
   }
-
-
-// {
-//   std::vector<double> tx(nx), vx(ny), uy(nx);
-//   for(size_t i = 0; i < vx.size(); ++i)
-//     vx[i] = u(1,i,ny/2)/u_lbm;
-//   for(size_t j = 0; j < uy.size(); ++j) {
-//     uy[j] = u(0,nx/2,j)/u_lbm;
-//     tx[j] = double(j) / (nx - 1);
-//   }
-
-//   Gnuplot gp;
-//   //gp << "set xrange [0:1]\nset yrange [-1:1]\n";
-    
-//   gp << "plot '-' with lines title 'uy', '-' with lines title 'vx'\n";
-//   gp.send1d(std::make_tuple(tx, uy));
-//   gp.send1d(std::make_tuple(tx, vx));
-// }
-   
-
-
-
 
   return 0;
 }
